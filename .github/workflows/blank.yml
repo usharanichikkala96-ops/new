@@ -1,0 +1,96 @@
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
+from transformers import pipeline
+import uvicorn
+
+# ---------- MEMORY ----------
+memory_store = {}
+
+def get_history(user: str):
+    return "\n".join(memory_store.get(user, []))
+
+def save_message(user: str, msg: str, reply: str):
+    memory_store.setdefault(user, []).append(f"User: {msg}\nAI: {reply}")
+
+# ---------- BACKEND ----------
+app = FastAPI(title="ChatGPT Pro AI")
+
+chatbot = pipeline("text-generation", model="gpt2")
+
+class ChatRequest(BaseModel):
+    message: str
+    user: str = "default"
+
+@app.post("/chat")
+async def chat(req: ChatRequest):
+    history = get_history(req.user)
+    prompt = history + "\nUser: " + req.message + "\nAI:"
+
+    response = chatbot(prompt, max_length=200, num_return_sequences=1)[0]['generated_text']
+    reply = response[len(prompt):].strip()
+
+    save_message(req.user, req.message, reply)
+    return {"reply": reply}
+
+# ---------- FRONTEND ----------
+@app.get("/", response_class=HTMLResponse)
+async def ui():
+    return """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>ChatGPT Pro AI</title>
+  <style>
+    body { background:#111; color:white; font-family:sans-serif; display:flex; justify-content:center; align-items:center; height:100vh; }
+    #chatbox { width:600px; background:#222; padding:20px; border-radius:12px; }
+    #messages { height:400px; overflow-y:auto; margin-bottom:10px; }
+    .user { color:skyblue; }
+    .ai { color:lightgreen; }
+    input { width:80%; padding:10px; border:none; border-radius:8px 0 0 8px; background:#333; color:white; }
+    button { width:20%; border:none; background:#4a90e2; color:white; border-radius:0 8px 8px 0; cursor:pointer; }
+  </style>
+</head>
+<body>
+  <div id="chatbox">
+    <div id="messages"></div>
+    <div>
+      <input id="input" placeholder="Type a message..." />
+      <button onclick="sendMessage()">Send</button>
+    </div>
+  </div>
+
+  <script>
+    async function sendMessage() {
+      const input = document.getElementById("input");
+      const msg = input.value;
+      if (!msg) return;
+
+      addMessage("You", msg, "user");
+      input.value = "";
+
+      const res = await fetch("/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: msg })
+      });
+      const data = await res.json();
+      addMessage("AI", data.reply, "ai");
+    }
+
+    function addMessage(sender, text, cls) {
+      const div = document.createElement("div");
+      div.className = cls;
+      div.innerHTML = `<b>${sender}:</b> ${text}`;
+      document.getElementById("messages").appendChild(div);
+      document.getElementById("messages").scrollTop = document.getElementById("messages").scrollHeight;
+    }
+  </script>
+</body>
+</html>
+"""
+
+# ---------- RUN ----------
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
